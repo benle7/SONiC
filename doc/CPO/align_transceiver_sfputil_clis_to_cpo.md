@@ -6,8 +6,10 @@
 2. [Definitions/Abbreviations](#2-definitionsabbreviations)
 3. [Scope](#3-scope)
 4. [Overview](#4-overview)
-5. [CLI flows and per-command behavior](#5-cli-flows-and-per-command-behavior)
+5. [How the show CLIs work today](#5-how-the-show-clis-work-today)
 6. [Changes (new code)](#6-changes-new-code)
+   - [6.1 Common CPO fields (format maps)](#61-common-cpo-fields-format-maps)
+   - [6.2 Vendor-specific formatting (Sfp API)](#62-vendor-specific-formatting-sfp-api)
 
 ---
 
@@ -69,21 +71,7 @@ overall_offset = get_overall_offset_general(api, page, offset, size) # page * PA
 raw = sfp.read_eeprom(overall_offset, size)
 ```
 
-Typical DB access (Redis connector):
-
-```python
-state_db.connect(state_db.STATE_DB)
-sfp_info_dict = state_db.get_all(state_db.STATE_DB, 'TRANSCEIVER_INFO|{}'.format(interface_name))
-dom_info_dict = state_db.get_all(state_db.STATE_DB, 'TRANSCEIVER_DOM_SENSOR|{}'.format(first_subport)) or {}
-# … same pattern for DOM_THRESHOLD, STATUS*, etc.
-```
-
----
-
-## 5. CLI flows and per-command behavior
-
-### 5.1 Hardware path (`sfputil` → `Sfp` → EEPROM or APIs)
-
+Hardware path (`sfputil` → `Sfp` → EEPROM or APIs)
 Use this flow for commands that talk to the platform without reading **STATE_DB**.
 
 ```text
@@ -100,8 +88,16 @@ Use this flow for commands that talk to the platform without reading **STATE_DB*
            │   get_transceiver_threshold_info()
 ```
 
-### 5.2 DB path (`show interfaces transceiver` → `sfpshow` → STATE_DB)
+Typical DB access (Redis connector):
 
+```python
+state_db.connect(state_db.STATE_DB)
+sfp_info_dict = state_db.get_all(state_db.STATE_DB, 'TRANSCEIVER_INFO|{}'.format(interface_name))
+dom_info_dict = state_db.get_all(state_db.STATE_DB, 'TRANSCEIVER_DOM_SENSOR|{}'.format(first_subport)) or {}
+# … same pattern for DOM_THRESHOLD, STATUS*, etc.
+```
+
+DB path (`show interfaces transceiver` → `sfpshow` → STATE_DB)
 Use this flow for **`show interfaces transceiver eeprom`** and **`status`**;
 
 ```text
@@ -129,7 +125,7 @@ Use this flow for **`show interfaces transceiver eeprom`** and **`status`**;
            │    get_all('TRANSCEIVER_DOM_FLAG|…')
 ```
 
-#### 5.2.1 `show interfaces transceiver error-status` → `sfputil show error-status`
+`show interfaces transceiver error-status` → `sfputil show error-status`
 
 ```text
   show interfaces transceiver error-status  [-p]  [-hw]  [-n <namespace>]
@@ -153,20 +149,11 @@ sw = state_db.get_all(state_db.STATE_DB, f"TRANSCEIVER_STATUS_SW|{port_name}")
 err = platform_chassis.get_sfp(physical_port).get_error_description()
 ```
 
-The only required change here is handling the new CPO errors and present them as part of the output.
+The only requirement here is to ensure we have the new CPO errors and present them as part of the output.
 
 ---
 
-## 6. Changes (new code)
-
-The idea is simple: new **lookup tables** (Python dicts) map **`els_*`** (and related) field names to **human-readable labels** and **units** (as done for other existing fields),
-and the **same conversion routines** that already print CMIS/QSFP output now consult those tables when the data is **CPO/ELS**.
-There is no chnage in how we calculate the values - we just pull it as today and map the keys to display names.
-
-### 6.1 Formatting flow (DB / API → map → output)
-
-For **`sfpshow`**, fields come from **STATE_DB** rows (merged into a Python **`dict`**). For **`sfputil show eeprom`**, the same shape of **`dict`** comes from the **Sfp** APIs.
-The formatter only prints keys that **exist in that dict**. For each such key, if it is covered by an ELS map, the **display name** is taken from the map and the **value** is taken unchanged from the dict.
+## 5. How the show CLIs work today
 
 ```text
    ┌─────────────────────────────┐         ┌──────────────────────────────┐
@@ -181,11 +168,11 @@ The formatter only prints keys that **exist in that dict**. For each such key, i
                     Python dict:  { "els_foo": <value from source>,
                                     "els_vendor": "Vendor-A", … }
                                    │
-                                   │  for each key present in dict
-                                   │  that matches ELS handling (els_*, …)
+                                   │
+                                   │
                                    ▼
                     ┌──────────────────────────────────────────┐
-                    │  Use the relavant ELS data map           │
+                    │  Use the relavant format data map           │
                     │  data_map[ field_key ] → display key     │
                     │  data_map[ "els_vendor" ] → "ELS Vendor" │
                     └──────────────────┬───────────────────────┘
@@ -196,39 +183,156 @@ The formatter only prints keys that **exist in that dict**. For each such key, i
                                        …
 ```
 
-So the **map** supplies the **column header / field name** for humans; the **DB or API** supplies the **value**.
-
-Minimal formatting logic (illustrative):
+The **map** supplies the **column header / field name** for humans; the **DB or API** supplies the **value**.
 
 ```python
-for field_key, value in data_dict.items():
-    if field_key.startswith("els_"):
-        label = CPO_TRANSCEIVER_INFO_MAP.get(field_key, field_key)
-        print(f"{label}: {value}")
-```
+# The real code is more complex but the following is a simpler version just to present the idea
 
-### 6.2 New maps
-
-| Map (purpose) | Role |
-|---------------|------|
-| **`CPO_TRANSCEIVER_INFO_MAP`** | Label for each **`els_*`** key in **transceiver info** (vendor, media, revision, etc.). |
-| **`CPO_DOM_CHANNEL_MONITOR_MAP`**, **`CPO_DOM_MODULE_MONITOR_MAP`**, **`CPO_DOM_MODULE_THRESHOLD_MAP`**, **`CPO_DOM_VALUE_UNIT_MAP`**, **`CPO_DOM_MODULE_THRESHOLD_UNIT_MAP`** | Labels and units for **ELS DOM** (per-lane and module sensors/thresholds). |
-| **`CPO_STATUS_MAP`** | Labels for **`els_*`** entries in merged **status** / **flag** dicts (used from **`sfpshow`** only, where status is printed). |
-
-Example shape of a label map (not exhaustive):
-
-```python
-CPO_ELS_TRANSCEIVER_INFO_MAP = {
-    "els_vendor": "ELS Vendor",
-    "els_cable_length": "ELS Cable Length",
-    # …
+DATA_MAP = {
+    'model': 'Vendor PN',
+    'vendor_oui': 'Vendor OUI',
+    'vendor_date': 'Vendor Date Code(YYYY-MM-DD Lot)',
+    'manufacturer': 'Vendor Name',
+    'vendor_rev': 'Vendor Rev',
+    # ...
 }
+
+# ...
+
+sfp = platform_chassis.get_sfp(physical_port)
+# Since sfp is platform object, it will return also vendor-specific fields.
+info = sfp.get_transceiver_info() # Or get_all('TRANSCEIVER_INFO|<port>')
+
+for key in info:
+  print(f'{DATA_MAP[key]} : {info[key]}')
 ```
 
-Info and DOM maps are maintained in both **`sfputil/main.py`** and **`scripts/sfpshow`** so decoded EEPROM output stays consistent between the hardware and DB paths.
+## 6. Changes (new code)
 
-The only change is **format** whatever **`els_*`** fields the platform or **`xcvrd`** already provides to the display name.
+We need 2 main changes:
+-  **Common CPO maps** Extend / create format maps for the new common CPO fields and integrate / use them as part of the flow (in case of CPO ports).
+- **Vendor-specific maps** Create a way for a vendor-specific formatting, for example override the existing formatting / mapping, or create formatting for a vendor-specific fields.
 
-![Sfputil and Transceiver CLIs Alignment for CPO](../../images/cpo/cli_key_data_map.png)
+### 6.1 Common CPO fields (format maps)
+
+Extend or create format maps for the new **common** CPO fields and integrate them in the formatter flow when the transceiver is CMIS CPO (merge into the base CMIS / QSFP-DD style maps as needed).
+
+The real code is more complex; the following is a simplified illustration:
+
+```python
+# The real code is more complex but the following is a simpler version just to present the idea
+
+DATA_MAP = {
+    'model': 'Vendor PN',
+    'vendor_oui': 'Vendor OUI',
+    'vendor_date': 'Vendor Date Code(YYYY-MM-DD Lot)',
+    'manufacturer': 'Vendor Name',
+    'vendor_rev': 'Vendor Rev',
+    # ...
+}
+
+CPO_TRANSCEIVER_INFO_MAP = {
+    'els_type': 'ELS type',
+    'els_type_abbrv_name': 'ELS type_abbrv_name',
+    'els_hardware_rev': 'ELS hardware_rev',
+    'els_serial': 'ELS serial',
+    # ...
+}
+
+# ...
+
+sfp = platform_chassis.get_sfp(physical_port)
+# Since sfp is platform object, it will return also vendor-specific fields.
+info = sfp.get_transceiver_info() # Or get_all('TRANSCEIVER_INFO|<port>')
+
+format_map = DATA_MAP
+if sfp_type == 'CPO':
+  format_map.update(CPO_TRANSCEIVER_INFO_MAP)
+
+for key in info:
+  print(f'{format_map[key]} : {info[key]}')
+
+```
+
+### 6.2 Vendor-specific formatting (Sfp API)
+
+We do not add vendor-specific fields formatting in shared `sfputil` / `sfpshow` code; those maps come from **platform** `Sfp` code via a small API.
+
+The real code is more complex; the following is a simplified illustration:
+
+```python
+# src/sonic-platform-common/sonic_platform_base/sfp_base.py:SfpBase
+
+def get_vendor_specific_format_map(self, map_name):
+        """
+        Retrieves the vendor-specific format map for the given map name
+        """
+        return {}
+```
+
+```python
+# src/sonic-py-common/sonic_py_common/sfp_format_map_names.py:
+
+DOM_CHANNEL_MONITOR_FORMAT_MAP = "dom_channel_monitor_format_map"
+DOM_MODULE_MONITOR_FORMAT_MAP = "dom_module_monitor_format_map"
+DOM_VALUE_UNIT_FORMAT_MAP = "dom_value_unit_format_map"
+STATUS_FORMAT_MAP = "status_format_map"
+```
+
+```python
+# platform/mellanox/mlnx-platform-api/sonic_platform/sfp.py:CpoPort
+
+CPO_DOM_CHANNEL_MONITOR_MAP = {
+        'els_laser_mpd1': 'ELS Lane1LaserMPD',
+        'els_tec_voltage_laser1': 'ELS Lane1TecVoltage',
+        'els_tec_health_value_laser1': 'ELS Lane1TecHealth',
+        'els_health_value_laser1': 'ELS Lane1LaserHealth',
+        # ...
+}
+
+# ...
+
+def get_vendor_specific_format_map(self, map_name):
+        """
+        Retrieves the vendor-specific format map for the given map name
+        """
+        if map_name == DOM_CHANNEL_MONITOR_FORMAT_MAP:
+            return self.CPO_DOM_CHANNEL_MONITOR_MAP
+        # elif ... 
+        return {}
+```
+
+```python
+# src/sonic-utilities/sfputil/main.py
+
+CMIS_DOM_CHANNEL_MONITOR_MAP = {
+    'rx1power': 'RX1Power',
+    'rx2power': 'RX2Power',
+    'rx3power': 'RX3Power',
+    # ...
+}
+
+CPO_DOM_CHANNEL_MONITOR_MAP = {
+    'els_tx1bias': 'ELS Lane1Bias',
+    'els_tx1voltage': 'ELS Lane1Voltage',
+    'els_tx1power': 'ELS Lane1Power',
+    # ...
+}
+
+info = sfp.get_transceiver_dom_real_value()
+
+# Adding new common CPO formatting
+format_map = CMIS_DOM_CHANNEL_MONITOR_MAP
+if sfp_type == 'CPO':
+  format_map.update(CPO_DOM_CHANNEL_MONITOR_MAP)
+
+# Adding new vendor-specific formatting
+vendor_dom_channel_monitor_map = sfp.get_vendor_specific_format_map(DOM_CHANNEL_MONITOR_FORMAT_MAP)
+format_map.update(vendor_dom_channel_monitor_map)
+
+for key in info:
+  print(f'{format_map[key]} : {info[key]}')
+
+```
 
 ---
