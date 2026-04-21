@@ -211,7 +211,7 @@ for key in info:
 
 We need 2 main changes:
 -  **Common CPO maps** Extend / create format maps for the new common CPO fields and integrate / use them as part of the flow (in case of CPO ports).
-- **Vendor-specific maps** Create a way for a vendor-specific formatting, for example override the existing formatting / mapping, or create formatting for a vendor-specific fields.
+- **Vendor-specific maps** Create a vendor-specific formatting for a vendor-specific fields.
 
 ### 6.1 Common CPO fields (format maps)
 
@@ -231,6 +231,7 @@ DATA_MAP = {
     # ...
 }
 
+''' NEW '''
 CPO_TRANSCEIVER_INFO_MAP = {
     'els_type': 'ELS type',
     'els_type_abbrv_name': 'ELS type_abbrv_name',
@@ -246,6 +247,7 @@ sfp = platform_chassis.get_sfp(physical_port)
 info = sfp.get_transceiver_info() # Or get_all('TRANSCEIVER_INFO|<port>')
 
 format_map = DATA_MAP
+''' NEW '''
 if sfp_type == 'CPO':
   format_map.update(CPO_TRANSCEIVER_INFO_MAP)
 
@@ -263,26 +265,32 @@ The real code is more complex; the following is a simplified illustration:
 ```python
 # src/sonic-platform-common/sonic_platform_base/sfp_base.py:SfpBase
 
-def get_vendor_specific_format_map(self, map_name):
+def get_vendor_specific_transceiver_info_format_map(self):
         """
-        Retrieves the vendor-specific format map for the given map name
+        Retrieves the vendor-specific transceiver info format map.
         """
         return {}
-```
 
-```python
-# src/sonic-py-common/sonic_py_common/sfp_format_map_names.py:
+def get_vendor_specific_transceiver_status_format_map(self):
+    """
+    Retrieves the vendor-specific transceiver status format map.
+    """
+    return {}
 
-DOM_CHANNEL_MONITOR_FORMAT_MAP = "dom_channel_monitor_format_map"
-DOM_MODULE_MONITOR_FORMAT_MAP = "dom_module_monitor_format_map"
-DOM_VALUE_UNIT_FORMAT_MAP = "dom_value_unit_format_map"
-STATUS_FORMAT_MAP = "status_format_map"
+def get_vendor_specific_dom_format_map(self):
+    """
+    Retrieves vendor-specific DOM format and unit maps.
+
+    Returns:
+        tuple(dict, dict): (dom_value_map, dom_unit_map)
+    """
+    return {}, {}
 ```
 
 ```python
 # platform/mellanox/mlnx-platform-api/sonic_platform/sfp.py:CpoPort
 
-CPO_DOM_CHANNEL_MONITOR_MAP = {
+CPO_DOM_CHANNEL_FORMAT_MAP = {
         'els_laser_mpd1': 'ELS Lane1LaserMPD',
         'els_tec_voltage_laser1': 'ELS Lane1TecVoltage',
         'els_tec_health_value_laser1': 'ELS Lane1TecHealth',
@@ -290,16 +298,31 @@ CPO_DOM_CHANNEL_MONITOR_MAP = {
         # ...
 }
 
+CPO_STATUS_MAP = {
+        'els_custom_mon_flag': 'ELS Custom mon flag',
+        'els_lane_enable': 'ELS Lane enable',
+        'els_icc_monitor': 'ELS ICC monitor',
+        'els_control_mode_APCACC': 'ELS control mode APC/ACC',
+        'els_vcc': 'ELS Vcc',
+        'els_fault_code1': 'ELS Fault code (lane 1)',
+        'els_warning_code1': 'ELS Warning code (lane 1)',
+        'els_lane_state1': 'ELS Lane state (lane 1)',
+        'els_bias_current_setpoint1': 'ELS Bias current setpoint (lane 1)',
+        'els_opt_power_setpoint1': 'ELS Optical power setpoint (lane 1)',
+        'els_bias_current_monitor1': 'ELS Bias current monitor (lane 1)',
+        'els_opt_power_monitor1': 'ELS Optical power monitor (lane 1)',
+        'els_voltage_monitor1': 'ELS Voltage monitor (lane 1)',
+        'els_output_fiber_checked_flag_lane1': 'ELS Output fiber checked flag (lane 1)',
+        # ...
+}
+
 # ...
 
-def get_vendor_specific_format_map(self, map_name):
+def get_vendor_specific_transceiver_status_format_map(self):
         """
-        Retrieves the vendor-specific format map for the given map name
+        Retrieves the vendor-specific transceiver status format map.
         """
-        if map_name == DOM_CHANNEL_MONITOR_FORMAT_MAP:
-            return self.CPO_DOM_CHANNEL_MONITOR_MAP
-        # elif ... 
-        return {}
+        return self.CPO_STATUS_MAP
 ```
 
 ```python
@@ -312,6 +335,7 @@ CMIS_DOM_CHANNEL_MONITOR_MAP = {
     # ...
 }
 
+''' NEW '''
 CPO_DOM_CHANNEL_MONITOR_MAP = {
     'els_tx1bias': 'ELS Lane1Bias',
     'els_tx1voltage': 'ELS Lane1Voltage',
@@ -321,18 +345,25 @@ CPO_DOM_CHANNEL_MONITOR_MAP = {
 
 info = sfp.get_transceiver_dom_real_value()
 
-# Adding new common CPO formatting
 format_map = CMIS_DOM_CHANNEL_MONITOR_MAP
+''' NEW '''
 if sfp_type == 'CPO':
+  # Adding new common CPO formatting
   format_map.update(CPO_DOM_CHANNEL_MONITOR_MAP)
 
-# Adding new vendor-specific formatting
-vendor_dom_channel_monitor_map = sfp.get_vendor_specific_format_map(DOM_CHANNEL_MONITOR_FORMAT_MAP)
-format_map.update(vendor_dom_channel_monitor_map)
-
+print('ChannelMonitorValues:')
 for key in info:
   print(f'{format_map[key]} : {info[key]}')
 
+print('ModuleMonitorValues:')
+# ...
+
+''' NEW '''
+# vendor-specific DOM formatting
+print('VendorSpecificDomValues:')
+vendor_specific_dom_format_map = sfp.get_vendor_specific_dom_format_map()
+for key in info:
+  print(f'{vendor_specific_dom_format_map[key]} : {info[key]}')
 ```
 
 ---
