@@ -196,8 +196,8 @@ ASPEED BMC's `PARSING_RULES` map five IPMI FRU lines to TLV codes and none is th
 manufacturer (`ast2700/sonic_platform/eeprom.py:36-42`). Adding
 `_TLV_CODE_MANUF_NAME` (`eeprom_tlvinfo.py:53`) to that map is sufficient, because
 the rules drive both the synthesised TLV image and the Redis publication
-(`eeprom.py:68-79`, `:109-135`). If the FRU image carries no board manufacturer
-field, the EEPROM content itself must be updated to include one — see 14.
+(`eeprom.py:68-79`, `:109-135`). The FRU image already carries a board
+manufacturer field, so the parsing rule is the whole of the change.
 
 A BMC image without this change simply omits `0x2b`; the host reports `N/A` and
 does not treat it as an incomplete read.
@@ -330,8 +330,8 @@ modifications; CLICK only.
 Downward compatibility: configuration saved by a previous release restores
 unchanged, since the leaf is optional — only the meaning of its absence differs
 (7.5). Restoring *this* release's configuration onto an older image may be
-rejected by a validating restore path, because the older YANG has no `os` leaf
-(14).
+rejected by a validating restore path, because the older YANG has no `os` leaf;
+that downgrade caveat is in 12.
 
 #### 9.3. Config DB enhancements
 
@@ -361,97 +361,21 @@ N/A
 - Because `sonic` is the default for every unresolved case (7.15), an OpenBMC
   platform loses its Redfish operations until `os` is set explicitly — on upgrade,
   and for as long as `config bmc os` goes unsaved.
+- Configuration saved on this release may be rejected when restored onto an older
+  image, whose YANG has no `os` leaf (9.2).
 - One BMC at one address, as today.
 
 ### 13. Testing Requirements/Design
 
-Because only an explicit `openbmc` selects Redfish (7.15) and no existing test
-sets it, suites that construct a BMC object with no CONFIG_DB present must pin the
-transport before anything new is added.
-
-| Suite to update | Cases | Effect if left alone |
-|---|---|---|
-| `sonic-platform-common` `tests/bmc_base_test.py` | 24 of 42 | 18 fail; 6 keep passing without exercising Redfish |
-| `mlnx-platform-api` `tests/test_bmc.py` | 6 | All fail — two on changed return values, four on the requirement 5 raise |
-| `mlnx-platform-api` `tests/test_component.py` | `test_bmc_update_firmware` | Fails on the requirement 5 raise |
-| `ast2700` `tests/test_eeprom.py` | 3, plus the `IPMI_FRU_OUTPUT` fixture | All keep passing without covering `0x2b` — membership assertions and a fixture with no manufacturer line |
-| `sonic-yang-models` `tests/yang_model_tests/` | 2 files | A payload in `tests_config/device_metadata.json` without a matching entry in `tests/device_metadata.json` never runs |
-
-`sonic-utilities` needs no edits: its BMC tests mock the platform API above the
-transport, so the values they assert stay correct for `openbmc`. Its cases are
-additions, in `tests/show_platform_test.py` and `tests/bmc_test.py`.
-
-Not covered, deliberately: pre-existing gaps beside the changed code —
-`get_bmc_build_config()`, the `bmc` container's other YANG leaves, and
-`Command-Reference.md`, which no CI check verifies. Also
-`scripts/bmc_techsupport.py`, the third caller of the Redfish-only operations: both
-its call sites already catch and log, and 12 declares debug-log collection
-unavailable under Redis, so `show techsupport` degrades as designed.
-
-#### 13.1. Unit Test cases
-
-`sonic-platform-common`, `tests/bmc_base_test.py`:
-
-| Case | Req |
+| Test | Req |
 |---|---|
-| Existing Redfish cases pinned to `openbmc` — 24 cases | 1 |
-| Routing per transport; the case resets the memoised accessor or it passes vacuously | 1, 3 |
-| An unavailable accessor — an older installed `sonic_py_common` — resolves to `sonic` and logs, without breaking construction | 1 |
-| A successful Redis read returns the mapped dictionary, `Manufacturer` included | 2, 3 |
-| The keys the CLI consumes are present from both transports, pinned each way; the Redfish-only extras of 7.5 are outside the contract | 3 |
-| `PowerState` is `On` and `Off` with `get_status()` mocked both ways | 3 |
-| `Manufacturer` is `N/A` and the read is not incomplete when `0x2b` is absent | 3, 8 |
-| `get_model()` and `get_serial()` from a Redis-sourced dictionary | 4 |
-| Decorated Redfish-only operations raise, and the exception escapes the wrapper rather than becoming an error tuple | 5 |
-| `open_session` and `wait_until_redfish_ready` raise — separate cases, being undecorated | 5 |
-| `get_version()` returns `'N/A'` and does not raise | 6 |
-| The connector is constructed with database index, address, port and a finite timeout, asserted on the arguments | 7 |
-| `{}` for each of: no address, connection failure, `Initialized` unset, `Model` or `SerialNumber` missing | 8 |
-| An invalid checksum returns the values with `Health` other than `OK` | 2, 8 |
-| `get_name`, `get_revision`, `is_replaceable`, `get_presence` and `get_status` return the same values with the transport pinned each way | 9 |
-
-This suite has no `SonicV2Connector` mock and no STATE_DB fixture — both are new
-here, and the only precedent is the local redis mocking in `eeprom_base_test.py`.
-
-`sonic-buildimage`:
-
-| Case | Target | Req |
-|---|---|---|
-| The accessor returns the configured value, and reads CONFIG_DB once per process | `sonic-py-common/tests/device_info_test.py` | 1 |
-| The accessor resolves to `sonic` on an absent row, a failed read and an unrecognised value, logging which applied | same | 1 |
-| Under `sonic` the three Mellanox sites yield `bmc_addr` with credentials unset, and `get_instance()` gates on the address alone | `mlnx-platform-api/tests/test_bmc.py` | 1 |
-| The manufacturer line parses into `_TLV_CODE_MANUF_NAME` and reaches `EEPROM_INFO\|0x2b`, with the synthesised image and its checksum still valid | `ast2700/tests/test_eeprom.py` | 12 |
-| YANG accepts `openbmc` and `sonic` on the `os` leaf and rejects anything else | `yang_model_tests/tests_config/device_metadata.json` for the payloads, `yang_model_tests/tests/device_metadata.json` for the registry | 11 |
-
-`sonic-utilities`:
-
-| Case | Target | Req |
-|---|---|---|
-| `config bmc os` accepts both values, rejects others, and creates the row when absent | `tests/bmc_test.py` | 11 |
-| Each of `reset-root-password`, `open-session` and `close-session` names the unsupported operation and exits without a traceback — the raise carries a message, since these commands print `Error: ` plus the exception text | same | 5 |
-| Both subcommands render under `sonic` with only `FirmwareVersion` as `N/A`, and neither aborts | `tests/show_platform_test.py` | 10 |
-
-#### 13.2. System Test cases
-
-Run on a SONiC-BMC platform, except the last, which needs an OpenBMC one.
-
-| Case | Req |
-|---|---|
-| Redis reads return the BMC's true model, part number, serial and manufacturer | 2, 3 |
-| `PowerState` is `On` against a reachable BMC | 3 |
-| Both subcommands produce identical output under both transports, firmware version aside | 10 |
-| Switching the transport takes effect without a reboot, as separate invocations since the accessor memoises | 1 |
-| An unreachable BMC and an uninitialised table both fail in bounded time rather than hanging the CLI | 7, 8 |
-| The saved transport survives warm and fast reboot, asserted on the selector itself | 11 |
-| On an OpenBMC platform with `os` set explicitly, every existing BMC operation including firmware update still works | 1 |
+| On a platform whose BMC runs SONiC, set `os` to `sonic` and run both `show platform bmc` subcommands. Model, part number, serial and manufacturer match the BMC's EEPROM, `PowerState` reads `On`, and the firmware version reads `N/A`. | 2, 3, 10, 12 |
+| Run each Redfish-only command — `config bmc reset-root-password`, `open-session`, `close-session` — under `os` set to `sonic`. Each names the operation as unsupported and exits without a traceback. | 5 |
+| Change `os` between the two values, running the subcommand as a fresh invocation each time. The transport follows the configuration with no reboot, and no stale value is carried over. | 1 |
+| Point `bmc_addr` at an unreachable BMC, and separately at a BMC whose `EEPROM_INFO` is uninitialised. Each command returns within seconds with a log line naming which failure it hit, rather than hanging. | 7, 8 |
+| Save the configuration, then warm reboot and fast reboot. The configured transport is still in effect afterwards. | 11 |
+| Regression, on an OpenBMC platform: set `os` to `openbmc` explicitly, then exercise firmware update, BMC reset and the session commands. This is the behaviour the change is most likely to break, because anything other than an explicit `openbmc` now resolves to `sonic`. | 1 |
 
 ### 14. Open/Action items
 
-| Item | Owner |
-|---|---|
-| Author name in section 1 | Feature owner |
-| Concrete timeout value for the Redis connection (7.6) | Feature owner |
-| Whether a validating restore path rejects the new leaf on downgrade (9.2) | Feature owner |
-| The exact `ipmi-fru` output label to match for the manufacturer (7.5) | BMC platform owner |
-| Whether a migrator step is preferred over explicit configuration on upgrade (7.5) | Feature owner and release owner |
-| Whether the unauthenticated Redis path needs an authentication story (5.1) | Security reviewer |
+N/A
