@@ -367,14 +367,17 @@ N/A
 
 ### 13. Testing Requirements/Design
 
-| Test | Req |
-|---|---|
-| On a platform whose BMC runs SONiC, set `os` to `sonic` and run both `show platform bmc` subcommands. Model, part number, serial and manufacturer match the BMC's EEPROM, `PowerState` reads `On`, and the firmware version reads `N/A`. | 2, 3, 10, 12 |
-| Run each Redfish-only command — `config bmc reset-root-password`, `open-session`, `close-session` — under `os` set to `sonic`. Each names the operation as unsupported and exits without a traceback. | 5 |
-| Change `os` between the two values, running the subcommand as a fresh invocation each time. The transport follows the configuration with no reboot, and no stale value is carried over. | 1 |
-| Point `bmc_addr` at an unreachable BMC, and separately at a BMC whose `EEPROM_INFO` is uninitialised. Each command returns within seconds with a log line naming which failure it hit, rather than hanging. | 7, 8 |
-| Save the configuration, then warm reboot and fast reboot. The configured transport is still in effect afterwards. | 11 |
-| Regression, on an OpenBMC platform: set `os` to `openbmc` explicitly, then exercise firmware update, BMC reset and the session commands. This is the behaviour the change is most likely to break, because anything other than an explicit `openbmc` now resolves to `sonic`. | 1 |
+Run on a platform whose BMC runs SONiC, except the last case.
+
+| What is being tested | Test | Req |
+|---|---|---|
+| The new CLI and configuration | `config bmc os sonic` and `config bmc os openbmc` each land in CONFIG_DB and are accepted; any other value is rejected. | 1, 11 |
+| The new accessor | `device_info.get_bmc_os()` returns the configured value, and returns `sonic` with the row absent. | 1 |
+| `get_eeprom()` over Redis | Under `os=sonic`, the platform API returns model, part number, serial and manufacturer matching the BMC's own EEPROM, with `PowerState` reflecting BMC reachability and the firmware version `N/A`. | 2, 3, 4, 6, 9, 12 |
+| The BMC show commands | `show platform bmc summary` and `show platform bmc eeprom` render the values above with no field blank or missing. | 10 |
+| Redfish-only commands under Redis | `config bmc reset-root-password`, `open-session` and `close-session` each report the operation as unsupported and exit without a traceback. | 5 |
+| The new read's failure paths | With `bmc_addr` unreachable, and separately with `EEPROM_INFO` uninitialised, the show commands return within seconds and log which failure they hit rather than hanging. | 7, 8 |
+| OpenBMC is unaffected | On an OpenBMC platform with `os=openbmc`, EEPROM read, firmware update, BMC reset and the session commands all behave as before. This is the behaviour the change is most likely to break, because anything other than an explicit `openbmc` now resolves to `sonic`. | 1, 9 |
 
 ### 14. Open/Action items
 
