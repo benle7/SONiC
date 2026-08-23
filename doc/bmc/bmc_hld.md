@@ -332,7 +332,10 @@ BMC plugin parses, from its `FRU Product Version` line, so no BMC-side change is
 needed for it. It is also the value the BMC reports as its own chassis revision, so
 the two sides agree. Under `openbmc` it keeps its present hardcoded `'N/A'`, for
 the same reason as everything else on that path — this design does not touch it.
-Since nothing calls it, this changes no command output — see section 10.11.
+Since nothing calls it, this changes no command output, and deliberately stays
+that way: a label on `show platform bmc summary` would read `N/A` under `openbmc`,
+and requirement 12 forbids changing existing output. The value is reachable
+through the platform API only.
 
 **`PowerState`** is not EEPROM data, being a Redfish Chassis property, so there is
 nothing in the table to read. It is derived from the existing `get_status()`, which
@@ -459,9 +462,10 @@ All of these apply under `sonic` only.
   two sides today.
 - **`PowerState` reports reachability, not chassis power.** It is `On` whenever the
   EEPROM read succeeded, and cannot report `Off` in the same call that returns data.
-- **`get_revision()` is served but not displayed.** No command reads it, so the
-  value is reachable only through the platform API. It also stays `N/A` under
-  `openbmc`, since this design leaves the Redfish path alone.
+- **`get_revision()` is served but not displayed, by decision.** No command reads
+  it, and none is changed to, so the value is reachable only through the platform
+  API. It also stays `N/A` under `openbmc`, since this design leaves the Redfish
+  path alone.
 - **Firmware version and firmware update are unavailable**, so
   `show platform firmware status` shows `N/A` for the BMC and `fwutil` reports a
   failed update.
@@ -495,11 +499,6 @@ All of these apply under `sonic` only.
 
 ### 10.11 Open items
 
-- **Decide whether `get_revision()` should be displayed.** It is served under
-  `sonic` but nothing reads it. Surfacing it means a new label on
-  `show platform bmc summary`, which would read `N/A` under `openbmc` and so
-  changes existing output — the one thing requirement 12 forbids. Either that
-  requirement is relaxed for the new label, or the value stays API-only.
 - **Confirm the `ipmi-fru` line prefix for the board manufacturer.** The new
   parsing rule keys off the literal output prefix, as the existing rules do. The
   prefix implied by the IPMI Board Info Area and the existing `FRU Board …` rules
