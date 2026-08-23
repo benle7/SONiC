@@ -374,7 +374,9 @@ BMC blocks. The skip is silent, matching what a platform with no BMC already doe
 admin@sonic:~$ config bmc os sonic
 admin@sonic:~$ config bmc os something-else
 Usage: config bmc os [OPTIONS] [openbmc|sonic]
-Error: Invalid value for '[openbmc|sonic]': invalid choice: something-else
+Try 'config bmc os --help' for help.
+
+Error: Invalid value for '[openbmc|sonic]': 'something-else' is not one of 'openbmc', 'sonic'.
 
 admin@sonic:~$ show platform bmc os
 sonic
