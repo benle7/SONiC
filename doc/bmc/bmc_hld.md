@@ -6,6 +6,7 @@
 |---|---|---|---|
 | 0.1 | 2026-05 | Yuazhe Wang | Initial version — BMC over Redfish |
 | 0.2 | 2026-08-20 | Ben Levi | Add section 10, transport selection for a BMC running SONiC. Number the second "3" heading as 4 and cascade. Amend sections 6 and 7 where the new section changes their behaviour |
+| 0.3 | 2026-08-23 | Ben Levi | Serve get_revision() from the BMC's EEPROM under sonic, per review |
 
 ## 1. BMC and Redfish 
 Board Management Controller (BMC) is a specialized microcontroller embedded on a motherboard. It manages the interface between system management software and hardware. BMC provides out-of-band management capabilities, allowing administrators to monitor and manage hardware remotely.
@@ -188,9 +189,10 @@ Everything above assumes the BMC runs OpenBMC and therefore serves Redfish. A BM
 may now run SONiC instead, which serves no Redfish, so every host-side operation in
 `BMCBase` fails against it.
 
-This section lets the operator declare which OS the BMC runs, routes the one
-operation that has a SONiC equivalent — reading the BMC's EEPROM — to the BMC's
-Redis instead, and refuses the Redfish-only operations with a clear message.
+This section lets the operator declare which OS the BMC runs, routes the operations
+that have a SONiC equivalent — `get_eeprom()` and `get_revision()`, both of which
+read the BMC's EEPROM — to the BMC's Redis instead, and refuses the Redfish-only
+operations with a clear message.
 `redfish_client.py` is not modified and the Redfish path is unchanged.
 
 ### 10.1 Requirements
@@ -216,13 +218,16 @@ Redis instead, and refuses the Redfish-only operations with a clear message.
    `get_bmc_debug_log_dump` return their own failure shape carrying a message that
    names the reason, without attempting a Redfish login.
 8. Under `sonic`, `get_version()` returns `'N/A'`.
-9. Every caller of a refused operation reports it without a traceback and with its
-   present exit code.
-10. `show platform bmc eeprom` and `show platform bmc summary` print their full
+9. Under `sonic`, `get_revision()` returns the label revision from the BMC's
+   `EEPROM_INFO`, and `'N/A'` when it cannot be read. Under `openbmc` it returns
+   `'N/A'` as it does today.
+10. Every caller of a refused operation reports it without a traceback and with its
+    present exit code.
+11. `show platform bmc eeprom` and `show platform bmc summary` print their full
     label set under both settings.
-11. Under `openbmc`, every existing BMC command behaves exactly as it does today,
+12. Under `openbmc`, every existing BMC command behaves exactly as it does today,
     and no Redfish request changes.
-12. Under `sonic`, `show techsupport` completes without invoking any BMC operation
+13. Under `sonic`, `show techsupport` completes without invoking any BMC operation
     and without an error, and its archive carries no BMC dump — the same silent skip
     a platform with no BMC gets today. Under `openbmc` it collects the BMC dump as
     it does today.
@@ -305,6 +310,7 @@ callers with no diagnostic.
 | `EEPROM_INFO\|0x21` | `Value` | `Model` | existing |
 | `EEPROM_INFO\|0x22` | `Value` | `PartNumber` | existing |
 | `EEPROM_INFO\|0x23` | `Value` | `SerialNumber` | existing |
+| `EEPROM_INFO\|0x27` | `Value` | `get_revision()` return | existing |
 | `EEPROM_INFO\|0x2b` | `Value` | `Manufacturer` | **new** |
 
 The gate is what makes requirement 6's "never a partial dictionary" deliverable.
@@ -317,6 +323,16 @@ plugin's `ipmi-fru` parsing table has no row for the manufacturer, so the value 
 never parsed, encoded or posted. Adding the row is the whole fix — the TLV code
 already exists and the decoder already handles it — and the value then reaches
 Redis through the paths that already carry the other four.
+
+**`get_revision()`** returns a hardcoded `'N/A'` today on both transports, and has
+no caller anywhere in the tree — it exists to satisfy the `DeviceBase` contract.
+Under `sonic` it returns `EEPROM_INFO|0x27`, the label revision. This costs
+nothing: `0x27` is `_TLV_CODE_LABEL_REVISION` and is already one of the TLVs the
+BMC plugin parses, from its `FRU Product Version` line, so no BMC-side change is
+needed for it. It is also the value the BMC reports as its own chassis revision, so
+the two sides agree. Under `openbmc` it keeps its present hardcoded `'N/A'`, for
+the same reason as everything else on that path — this design does not touch it.
+Since nothing calls it, this changes no command output — see section 10.11.
 
 **`PowerState`** is not EEPROM data, being a Redfish Chassis property, so there is
 nothing in the table to read. It is derived from the existing `get_status()`, which
@@ -404,8 +420,8 @@ sequenceDiagram
 ### 10.7 Performance
 
 One CLI command per invocation, so there is no scale dimension. The Redis path is
-the cheaper of the two: one TCP connection and four hash reads, against a Redfish
-login, an HTTPS GET and a logout.
+the cheaper of the two: one TCP connection, then the completeness-gate read and
+four value reads, against a Redfish login, an HTTPS GET and a logout.
 
 The connect must be bounded, and today's helper cannot bound it —
 `db_connect_remote` hardcodes a zero timeout, which resolves to a connect with no
@@ -443,6 +459,9 @@ All of these apply under `sonic` only.
   two sides today.
 - **`PowerState` reports reachability, not chassis power.** It is `On` whenever the
   EEPROM read succeeded, and cannot report `Off` in the same call that returns data.
+- **`get_revision()` is served but not displayed.** No command reads it, so the
+  value is reachable only through the platform API. It also stays `N/A` under
+  `openbmc`, since this design leaves the Redfish path alone.
 - **Firmware version and firmware update are unavailable**, so
   `show platform firmware status` shows `N/A` for the BMC and `fwutil` reports a
   failed update.
@@ -466,6 +485,7 @@ All of these apply under `sonic` only.
 | Manufacturer reaches Redis | On the BMC, `EEPROM_INFO\|0x2b` exists and its value equals the manufacturer in `ipmi-fru` output. Confirm `show platform syseeprom` on the BMC also lists it |
 | Manufacturer against an older BMC image | With a BMC image lacking the parsing rule, `show platform bmc eeprom` prints `Manufacturer: N/A` and the other four populated, with no traceback |
 | Summary under Redis | `show platform bmc summary` prints all six labels with `FirmwareVersion: N/A` |
+| Revision over Redis | `get_revision()` on the BMC object returns the value of that BMC's `EEPROM_INFO\|0x27`. Under `openbmc` the same call returns `N/A` |
 | Refusing the config commands | Each of `config bmc reset-root-password`, `config bmc open-session` and `config bmc close-session -s 1` prints a message naming the reason, produces no traceback, and exits 0 |
 | Skipping the techsupport dump | `show techsupport` completes, its archive's `bmc/` directory is empty, and the output carries no `ERROR:` line |
 | Refusing the firmware paths | `show platform firmware status` shows `N/A` for the BMC row, and a BMC firmware install reports a failure rather than a traceback |
@@ -475,6 +495,11 @@ All of these apply under `sonic` only.
 
 ### 10.11 Open items
 
+- **Decide whether `get_revision()` should be displayed.** It is served under
+  `sonic` but nothing reads it. Surfacing it means a new label on
+  `show platform bmc summary`, which would read `N/A` under `openbmc` and so
+  changes existing output — the one thing requirement 12 forbids. Either that
+  requirement is relaxed for the new label, or the value stays API-only.
 - **Confirm the `ipmi-fru` line prefix for the board manufacturer.** The new
   parsing rule keys off the literal output prefix, as the existing rules do. The
   prefix implied by the IPMI Board Info Area and the existing `FRU Board …` rules
