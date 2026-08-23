@@ -449,6 +449,13 @@ incomplete, carrying the address and which of the two it was.
 
 All of these apply under `sonic` only.
 
+- **The connect timeout bounds the connect only.** The timeout passed when opening
+  the connection bounds establishing it; nothing on this path sets a per-command
+  timeout, so a BMC that completes the TCP handshake and then stops answering leaves
+  `get_eeprom()` waiting on the read. The bound in requirement 6 is therefore scoped
+  to the connect, which is the failure the `usb0`-down case exercises. Bounding the
+  reads as well would need a command timeout in `swss-common`, outside this feature.
+  The wait falls on an interactive command and is interruptible; no daemon polls it.
 - **`Manufacturer` requires the BMC image to carry the new parsing rule.** A BMC
   running an older SONiC image publishes no manufacturer TLV, so the host renders
   `Manufacturer: N/A` against it. The host needs no version check: a missing key is
@@ -501,9 +508,13 @@ All of these apply under `sonic` only.
 
 ### 10.11 Open items
 
-- **Confirm the `ipmi-fru` line prefix for the board manufacturer.** The new
-  parsing rule keys off the literal output prefix, as the existing rules do. The
-  prefix implied by the IPMI Board Info Area and the existing `FRU Board …` rules
-  has not been checked against real `ipmi-fru` output. If it differs, the rule is
-  wrong and the manufacturer silently stays absent, because the parser matches by
-  substring and does not report an unmatched rule.
+None outstanding.
+
+The `ipmi-fru` line prefix the new parsing rule keys off was the one open question
+here. It is resolved from the tool's source at the packaged FreeIPMI version, where
+the board info area is printed through the same helper and in the same `FRU <field>:`
+form as the four labels the existing rules already depend on, with no other output
+line sharing that prefix. The manufacturer test case in section 10.10 confirms it on
+hardware. This mattered because the parser matches by substring and does not report
+an unmatched rule, so a wrong prefix would leave the manufacturer silently absent
+rather than raising anything.
